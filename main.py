@@ -5,6 +5,7 @@ from datetime import datetime
 import numpy as np
 from backtester import load_data
 from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels
+from broker_connector import QuantXConnector, AccountManager
 
 # Configure Streamlit page
 st.set_page_config(
@@ -161,9 +162,29 @@ with st.sidebar:
         st.markdown(f"**Position Size:** {pos_size:.2f} units")
 
         if st.button("EXECUTE ICT SETUP"):
-            # Mock sending to QuantX
-            st.success(f"Successfully routed order to QuantX (Topstep API) for {pos_size:.2f} units {trade_dir}!")
-            st.balloons()
+            with st.spinner("Routing order to trade copier..."):
+                connector = QuantXConnector()
+                connector.authenticate()
+                manager = AccountManager(connector)
+                manager.sync_accounts()
+
+                # Assume symbol is 'ES' for the S&P500 terminal
+                action = "Buy" if trade_dir == "Long" else "Sell"
+
+                results = manager.execute_trade(
+                    symbol="ES",
+                    action=action,
+                    risk_per_account=risk_per_trade,
+                    entry_price=entry_p,
+                    stop_loss=sl
+                )
+
+                num_accounts = len(manager.accounts)
+                if results:
+                    st.success(f"Successfully executed trade across {num_accounts} accounts via QuantX!")
+                    st.balloons()
+                else:
+                    st.error("Failed to execute trade. Check logs for details.")
     else:
         st.warning("No valid FVG entry setup currently detected.")
         st.button("EXECUTE ICT SETUP", disabled=True)
