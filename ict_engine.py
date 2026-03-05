@@ -93,13 +93,11 @@ def get_daily_bias(df_daily, fvgs, current_price):
         df['Close'] = df['Latest']
 
     # Get previous daily high and low
-    if len(df) >= 2:
-        # Assuming the last row is the current unclosed day, the row before is the previous day
-        prev_day_high = df['High'].iloc[-2]
-        prev_day_low = df['Low'].iloc[-2]
-    elif len(df) == 1:
-        prev_day_high = df['High'].iloc[0]
-        prev_day_low = df['Low'].iloc[0]
+    # Assuming the df_daily passed has already been filtered to exclude the current unclosed day.
+    # Therefore, the last row is the previous day.
+    if len(df) >= 1:
+        prev_day_high = df['High'].iloc[-1]
+        prev_day_low = df['Low'].iloc[-1]
     else:
         prev_day_high = None
         prev_day_low = None
