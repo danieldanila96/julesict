@@ -243,3 +243,129 @@ def calculate_po3_levels(df_intraday, bias=None, midnight_hour=0, midnight_minut
         'current_price': current_price,
         'po3_phase': phase
     }
+
+
+def detect_smt_divergence(df_es, df_nq, df_ym, lookback=10):
+    """
+    Compares NQ, ES, and YM for relative strength (SMT) divergence.
+
+    If NQ makes a lower low but ES doesn't, flag a bullish SMT divergence.
+    If NQ makes a higher high but ES doesn't, flag a bearish SMT divergence.
+
+    Args:
+        df_es: pd.DataFrame of ES (S&P500) data.
+        df_nq: pd.DataFrame of NQ (Nasdaq) data.
+        df_ym: pd.DataFrame of YM (Dow Jones) data.
+        lookback: Integer, number of recent periods to compare for swing highs/lows.
+
+    Returns:
+        dict: containing the SMT status and a descriptive message.
+    """
+    if len(df_es) < lookback or len(df_nq) < lookback or len(df_ym) < lookback:
+        return {'status': 'None', 'message': 'Insufficient data'}
+
+    # Get recent slice
+    es_recent = df_es.iloc[-lookback:].copy()
+    nq_recent = df_nq.iloc[-lookback:].copy()
+    ym_recent = df_ym.iloc[-lookback:].copy()
+
+    # Simple Swing High/Low approximation (min/max of the lookback period)
+    es_low = es_recent['Low'].min()
+    nq_low = nq_recent['Low'].min()
+    ym_low = ym_recent['Low'].min()
+
+    es_high = es_recent['High'].max()
+    nq_high = nq_recent['High'].max()
+    ym_high = ym_recent['High'].max()
+
+    # We also need a prior reference point to establish if it's a "lower low" vs "higher low"
+    # We take the preceding lookback period
+    if len(df_es) >= lookback * 2:
+        es_prior = df_es.iloc[-lookback*2:-lookback]
+        nq_prior = df_nq.iloc[-lookback*2:-lookback]
+        ym_prior = df_ym.iloc[-lookback*2:-lookback]
+
+        es_prior_low = es_prior['Low'].min()
+        nq_prior_low = nq_prior['Low'].min()
+        ym_prior_low = ym_prior['Low'].min()
+
+        es_prior_high = es_prior['High'].max()
+        nq_prior_high = nq_prior['High'].max()
+        ym_prior_high = ym_prior['High'].max()
+    else:
+        # If not enough history, use the first half of the available lookback as prior
+        mid = lookback // 2
+        es_prior_low = es_recent['Low'].iloc[:mid].min()
+        nq_prior_low = nq_recent['Low'].iloc[:mid].min()
+        ym_prior_low = ym_recent['Low'].iloc[:mid].min()
+
+        es_prior_high = es_recent['High'].iloc[:mid].max()
+        nq_prior_high = nq_recent['High'].iloc[:mid].max()
+        ym_prior_high = ym_recent['High'].iloc[:mid].max()
+
+        es_low = es_recent['Low'].iloc[mid:].min()
+        nq_low = nq_recent['Low'].iloc[mid:].min()
+        ym_low = ym_recent['Low'].iloc[mid:].min()
+
+        es_high = es_recent['High'].iloc[mid:].max()
+        nq_high = nq_recent['High'].iloc[mid:].max()
+        ym_high = ym_recent['High'].iloc[mid:].max()
+
+    # Determine structural swings
+    es_made_ll = es_low < es_prior_low
+    nq_made_ll = nq_low < nq_prior_low
+    ym_made_ll = ym_low < ym_prior_low
+
+    es_made_hh = es_high > es_prior_high
+    nq_made_hh = nq_high > nq_prior_high
+    ym_made_hh = ym_high > ym_prior_high
+
+    status = "None"
+    message = "Indices in sync"
+
+    # Bullish SMT Divergence Checks
+    # E.g., NQ makes Lower Low, but ES makes Higher Low
+    bullish_smt = False
+    bullish_msgs = []
+
+    if nq_made_ll and not es_made_ll:
+        bullish_smt = True
+        bullish_msgs.append("NQ Lower Low / ES Higher Low")
+    if es_made_ll and not nq_made_ll:
+        bullish_smt = True
+        bullish_msgs.append("ES Lower Low / NQ Higher Low")
+    if ym_made_ll and not es_made_ll:
+        bullish_smt = True
+        bullish_msgs.append("YM Lower Low / ES Higher Low")
+
+    # Bearish SMT Divergence Checks
+    # E.g., NQ makes Higher High, but ES makes Lower High
+    bearish_smt = False
+    bearish_msgs = []
+
+    if nq_made_hh and not es_made_hh:
+        bearish_smt = True
+        bearish_msgs.append("NQ Higher High / ES Lower High")
+    if es_made_hh and not nq_made_hh:
+        bearish_smt = True
+        bearish_msgs.append("ES Higher High / NQ Lower High")
+    if ym_made_hh and not es_made_hh:
+        bearish_smt = True
+        bearish_msgs.append("YM Higher High / ES Lower High")
+
+    if bullish_smt and bearish_smt:
+        status = "Mixed Divergence"
+        message = "Conflicting SMT signals"
+    elif bullish_smt:
+        status = "Bullish SMT"
+        message = " | ".join(bullish_msgs)
+    elif bearish_smt:
+        status = "Bearish SMT"
+        message = " | ".join(bearish_msgs)
+
+    return {
+        'status': status,
+        'message': message,
+        'es_low': es_low, 'nq_low': nq_low, 'ym_low': ym_low,
+        'es_high': es_high, 'nq_high': nq_high, 'ym_high': ym_high
+    }

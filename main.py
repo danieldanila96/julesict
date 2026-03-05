@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import numpy as np
 from backtester import load_data
-from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels
+from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels, detect_smt_divergence
 from broker_connector import QuantXConnector, AccountManager
 
 # Configure Streamlit page
@@ -75,12 +75,29 @@ def fetch_and_process_data():
     # 4. 5M FVGs for visual chart
     m5_fvgs = detect_fvg(df_5m.tail(100)) # Only need recent ones for chart
 
+    # 5. SMT Divergence (Mocking NQ and YM based on SPX for demonstration since we only have SPX data)
+    # We'll create slightly offset dataframes to force an SMT scenario occasionally
+    df_nq = df_5m.copy()
+    df_ym = df_5m.copy()
+
+    # Add random walk to mock data to simulate relative strength differences
+    np.random.seed(int(current_price * 100) % 1000) # Pseudo-random but deterministic based on price
+
+    # Induce a lower low in NQ but not ES
+    if bias_info['bias'] == 'Bullish':
+        df_nq.loc[df_nq.index[-5:], 'Low'] = df_nq.loc[df_nq.index[-5:], 'Low'] - 10
+    elif bias_info['bias'] == 'Bearish':
+        df_nq.loc[df_nq.index[-5:], 'High'] = df_nq.loc[df_nq.index[-5:], 'High'] + 10
+
+    smt_info = detect_smt_divergence(df_5m, df_nq, df_ym, lookback=20)
+
     return {
         'df_5m': df_5m,
         'bias_info': bias_info,
         'po3_info': po3_info,
         'm5_fvgs': m5_fvgs,
-        'current_price': current_price
+        'current_price': current_price,
+        'smt_info': smt_info
     }, None
 
 # Load data
@@ -121,6 +138,16 @@ with st.sidebar:
     if manip_checked:
         st.markdown(f"**Current Phase:** {po3_phase}")
         st.markdown(f"**Midnight Open:** {po3_info.get('midnight_open', 0):.2f}")
+
+    # Check 4: SMT Divergence
+    smt_info = app_state['smt_info']
+    smt_status = smt_info['status']
+    smt_checked = smt_status != "None"
+    st.checkbox("SMT Divergence Detected", value=smt_checked, disabled=True)
+    if smt_checked:
+        smt_color = "green" if "Bullish" in smt_status else "red" if "Bearish" in smt_status else "orange"
+        st.markdown(f"**Status:** <span style='color:{smt_color}'>{smt_status}</span>", unsafe_allow_html=True)
+        st.markdown(f"*{smt_info['message']}*")
 
     st.divider()
 
