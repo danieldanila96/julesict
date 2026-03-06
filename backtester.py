@@ -166,32 +166,49 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                     if recent_fvgs:
                         latest_fvg = recent_fvgs[-1]
 
+                        # Add Time Filter (Only trade during regular NY session 09:30 - 16:00 EST)
+                        trade_hour = current_time.hour
+                        trade_minute = current_time.minute
+                        time_in_minutes = trade_hour * 60 + trade_minute
+                        # 9:30 AM = 570 mins, 4:00 PM = 960 mins
+                        # Actually let's restrict to a "killzone" between 9:30 AM and 11:30 AM (570 to 690) to avoid lunch chop
+                        if time_in_minutes < 570 or time_in_minutes > 690:
+                            continue
+
                         # Enter Long
                         if bias == 'Bullish' and latest_fvg['type'] == 1:
-                            in_trade = True
                             entry_price = current_close
-                            stop_loss = latest_fvg['bottom'] - (current_close * 0.0005) # Buffer below FVG
+                            stop_loss = latest_fvg['bottom'] - (current_close * 0.0002) # Tighter buffer below FVG
 
                             # Simple risk calc: R = entry - sl
                             risk_per_unit = entry_price - stop_loss
                             if risk_per_unit <= 0:
-                                in_trade = False # Invalid SL
                                 continue
 
+                            reward_per_unit = take_profit - entry_price
+                            # Minimum 1:2 Risk to Reward
+                            if reward_per_unit < risk_per_unit * 2:
+                                continue
+
+                            in_trade = True
                             position_size = risk_per_trade / risk_per_unit
 
                         # Enter Short
                         elif bias == 'Bearish' and latest_fvg['type'] == -1:
-                            in_trade = True
                             entry_price = current_close
-                            stop_loss = latest_fvg['top'] + (current_close * 0.0005) # Buffer above FVG
+                            stop_loss = latest_fvg['top'] + (current_close * 0.0002) # Tighter buffer above FVG
 
                             # Simple risk calc
                             risk_per_unit = stop_loss - entry_price
                             if risk_per_unit <= 0:
-                                in_trade = False
                                 continue
 
+                            reward_per_unit = entry_price - take_profit
+                            # Minimum 1:2 Risk to Reward
+                            if reward_per_unit < risk_per_unit * 2:
+                                continue
+
+                            in_trade = True
                             position_size = risk_per_trade / risk_per_unit
 
             else:
