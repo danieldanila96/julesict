@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import os
+import glob
 import plotly.graph_objects as go
 from datetime import datetime
 import numpy as np
@@ -211,68 +213,125 @@ with st.sidebar:
         st.button("EXECUTE ICT SETUP", disabled=True)
 
 
-# --- MAIN CONTENT AREA: VISUAL CHARTS ---
+# --- TABS ---
+tab_live, tab_backtest = st.tabs(["Live Terminal", "Backtest Results"])
 
-# Create Plotly Chart
-# Only show the last N candles for clarity
-plot_df = df_5m.tail(150).copy()
+with tab_live:
 
-fig = go.Figure(data=[go.Candlestick(x=plot_df['Time'],
-                open=plot_df['Open'],
-                high=plot_df['High'],
-                low=plot_df['Low'],
-                close=plot_df['Close'],
-                name="S&P 500")])
 
-# Draw Midnight Open Line
-if 'midnight_open' in po3_info:
-    m_open = po3_info['midnight_open']
-    fig.add_hline(y=m_open, line_dash="dash", line_color="orange",
-                  annotation_text="Midnight Open", annotation_position="top right")
+    # Create Plotly Chart
+    # Only show the last N candles for clarity
+    plot_df = df_5m.tail(150).copy()
 
-# Draw DOL Targets
-if bias_info['dol']:
-    dol_price = bias_info['dol'][1]
-    dol_name = bias_info['dol'][0]
-    fig.add_hline(y=dol_price, line_width=2, line_color="purple",
-                  annotation_text=f"DOL: {dol_name}", annotation_position="bottom right")
+    fig = go.Figure(data=[go.Candlestick(x=plot_df['Time'],
+                    open=plot_df['Open'],
+                    high=plot_df['High'],
+                    low=plot_df['Low'],
+                    close=plot_df['Close'],
+                    name="S&P 500")])
 
-# Highlight FVGs
-# Filter to only show FVGs that overlap with our plot window
-start_time = plot_df['Time'].iloc[0]
-for fvg in m5_fvgs:
-    fvg_time = fvg['time'] if fvg['time'] is not None else start_time
-    if pd.to_datetime(fvg_time) >= start_time:
-        color = "rgba(0, 255, 0, 0.2)" if fvg['type'] == 1 else "rgba(255, 0, 0, 0.2)"
+    # Draw Midnight Open Line
+    if 'midnight_open' in po3_info:
+        m_open = po3_info['midnight_open']
+        fig.add_hline(y=m_open, line_dash="dash", line_color="orange",
+                      annotation_text="Midnight Open", annotation_position="top right")
 
-        # Add shape for FVG
-        fig.add_shape(type="rect",
-            x0=fvg_time, y0=fvg['bottom'],
-            x1=plot_df['Time'].iloc[-1], y1=fvg['top'],
-            fillcolor=color,
-            line=dict(color="rgba(255, 255, 255, 0)"),
-            layer="below"
-        )
+    # Draw DOL Targets
+    if bias_info['dol']:
+        dol_price = bias_info['dol'][1]
+        dol_name = bias_info['dol'][0]
+        fig.add_hline(y=dol_price, line_width=2, line_color="purple",
+                      annotation_text=f"DOL: {dol_name}", annotation_position="bottom right")
 
-# Format Chart
-fig.update_layout(
-    title='LiquidX 5-Minute Execution Chart',
-    yaxis_title='Price',
-    xaxis_title='Time',
-    xaxis_rangeslider_visible=False,
-    template='plotly_dark',
-    height=700,
-    margin=dict(l=0, r=0, t=40, b=0)
-)
+    # Highlight FVGs
+    # Filter to only show FVGs that overlap with our plot window
+    start_time = plot_df['Time'].iloc[0]
+    for fvg in m5_fvgs:
+        fvg_time = fvg['time'] if fvg['time'] is not None else start_time
+        if pd.to_datetime(fvg_time) >= start_time:
+            color = "rgba(0, 255, 0, 0.2)" if fvg['type'] == 1 else "rgba(255, 0, 0, 0.2)"
 
-st.plotly_chart(fig, use_container_width=True)
+            # Add shape for FVG
+            fig.add_shape(type="rect",
+                x0=fvg_time, y0=fvg['bottom'],
+                x1=plot_df['Time'].iloc[-1], y1=fvg['top'],
+                fillcolor=color,
+                line=dict(color="rgba(255, 255, 255, 0)"),
+                layer="below"
+            )
 
-# Footer info
-st.markdown("---")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Current Price", f"{current_price:.2f}")
-with col2:
-    st.metric("PO3 Phase", po3_info.get('po3_phase', 'Unknown'))
-with col3:
-    st.metric("Latest Update", plot_df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S'))
+    # Format Chart
+    fig.update_layout(
+        title='LiquidX 5-Minute Execution Chart',
+        yaxis_title='Price',
+        xaxis_title='Time',
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        height=700,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Footer info
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current Price", f"{current_price:.2f}")
+    with col2:
+        st.metric("PO3 Phase", po3_info.get('po3_phase', 'Unknown'))
+    with col3:
+        st.metric("Latest Update", plot_df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S'))
+
+
+with tab_backtest:
+    st.header("Backtest Reports")
+
+    if not os.path.exists('reports'):
+        st.info("No reports folder found. Run the backtester to generate reports.")
+    else:
+        report_files = sorted(glob.glob('reports/*.csv'), reverse=True)
+        if not report_files:
+            st.info("No backtest CSV reports found.")
+        else:
+            selected_report = st.selectbox("Select a Backtest Report", report_files)
+
+            if selected_report:
+                df_report = pd.read_csv(selected_report)
+
+                # Derive summary stats assuming starting cap $100k, risk $1k
+                st.markdown("### Summary Statistics")
+                col1, col2, col3, col4 = st.columns(4)
+
+                # We know from requirements: Starting cap is $100k, risk is $1k
+                start_cap = 100000
+                risk_pt = 1000
+
+                with col1:
+                    st.metric("Starting Capital", f"${start_cap:,.2f}")
+                with col2:
+                    st.metric("Risk per Trade", f"${risk_pt:,.2f}")
+                with col3:
+                    total_trades = len(df_report)
+                    st.metric("Total Trades", total_trades)
+                with col4:
+                    if total_trades > 0:
+                        final_cap = df_report['Cumulative Equity'].iloc[-1]
+                        st.metric("Final Equity", f"${final_cap:,.2f}", f"{(final_cap - start_cap)/start_cap * 100:.2f}%")
+
+                st.markdown("---")
+                st.markdown("### Equity Curve")
+
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(x=df_report['Date'], y=df_report['Cumulative Equity'], mode='lines', name='Equity', line=dict(color='#00ff00', width=2)))
+                fig_eq.update_layout(
+                    template='plotly_dark',
+                    xaxis_title='Date',
+                    yaxis_title='Account Equity ($)',
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    height=400
+                )
+                st.plotly_chart(fig_eq, use_container_width=True)
+
+                st.markdown("### Trade Log")
+                st.dataframe(df_report, use_container_width=True)

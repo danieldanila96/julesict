@@ -279,6 +279,87 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
     print("\nLast 5 Trades:")
     print(df_trades[['Date', 'Type', 'Entry Price', 'Exit Price', 'PnL', 'Reason']].tail())
 
+    # Generate Reports
+    import datetime
+    import plotly.graph_objects as go
+
+    os.makedirs('reports', exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_base = f"reports/backtest_{timestamp}"
+
+    # Save raw trades for Streamlit to ingest easily
+    df_trades['Cumulative Equity'] = df_trades['Capital']
+    df_trades.to_csv(f"{report_base}.csv", index=False)
+
+    # Save a standalone HTML report
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_trades['Date'], y=df_trades['Cumulative Equity'], mode='lines', name='Equity Curve'))
+
+    fig.update_layout(
+        title=f"LiquidX Backtest Report - {timestamp}",
+        xaxis_title="Date",
+        yaxis_title="Account Equity ($)",
+        template='plotly_dark'
+    )
+
+    # Convert dataframe to HTML table
+    table_html = df_trades[['Date', 'Type', 'Entry Price', 'Exit Price', 'PnL', 'Cumulative Equity', 'Reason']].to_html(classes='table table-striped', index=False)
+
+    html_content = f"""
+    <html>
+    <head>
+        <title>LiquidX Backtest - {timestamp}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #121212; color: #ffffff; }}
+            .summary {{ padding: 20px; background-color: #1e1e1e; border-radius: 8px; margin-bottom: 20px; }}
+            .table-container {{ overflow-x: auto; margin-top: 30px; }}
+            table {{ width: 100%; border-collapse: collapse; text-align: left; }}
+            th, td {{ padding: 12px; border-bottom: 1px solid #333; }}
+            th {{ background-color: #2c2c2c; }}
+        </style>
+        <!-- DataTables CSS/JS for sortable HTML tables -->
+        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+        <script>
+            $(document).ready( function () {{
+                $('.table').DataTable({{
+                    "pageLength": 50,
+                    "order": [[ 0, "desc" ]] // sort by date descending
+                }});
+            }} );
+        </script>
+    </head>
+    <body>
+        <h1>LiquidX Backtest Report</h1>
+        <div class="summary">
+            <h2>Summary Statistics</h2>
+            <p><strong>Starting Capital:</strong> ${initial_capital:,.2f}</p>
+            <p><strong>Risk Per Trade:</strong> ${risk_per_trade:,.2f}</p>
+            <p><strong>Total Trades:</strong> {total_trades}</p>
+            <p><strong>Win Rate:</strong> {win_rate:.2f}% ({winning_trades}W / {losing_trades}L)</p>
+            <p><strong>Profit Factor:</strong> {profit_factor:.2f}</p>
+            <p><strong>Final Capital:</strong> ${final_capital:,.2f}</p>
+            <p><strong>Total Net PnL:</strong> ${total_pnl:,.2f} ({return_pct:.2f}%)</p>
+        </div>
+
+        <div style="height: 500px; width: 100%;">
+            {fig.to_html(full_html=False, include_plotlyjs='cdn')}
+        </div>
+
+        <div class="table-container">
+            <h2>Trade Log</h2>
+            {table_html}
+        </div>
+    </body>
+    </html>
+    """
+
+    with open(f"{report_base}.html", "w") as f:
+        f.write(html_content)
+
+    print(f"\nReport generated: {report_base}.html and {report_base}.csv")
+
 
 if __name__ == '__main__':
     run_backtest()
