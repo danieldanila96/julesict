@@ -48,7 +48,7 @@ LiquidX is a Python-based automated and semi-automated trading terminal designed
 To launch the LiquidX Trading Terminal dashboard in your browser:
 
 ```bash
-streamlit run main.py
+streamlit run dashboard.py
 ```
 
 ### Running the Backtester

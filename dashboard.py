@@ -152,66 +152,28 @@ with st.sidebar:
 
     st.divider()
 
-    # --- TRADE TERMINAL ---
-    st.header("Trade Terminal")
-    st.write("Ready to execute based on active 5M FVG and Bias.")
+    # --- OPEN POSITIONS MONITOR ---
+    st.header("Open Positions")
+    st.write("Read-only view from execution engine database.")
 
-    # Find nearest valid entry FVG
-    valid_entry = None
-    unfilled_m5_fvgs = [f for f in m5_fvgs if not f['filled']]
-    if bias == 'Bullish':
-        bullish_fvgs = [f for f in unfilled_m5_fvgs if f['type'] == 1 and f['bottom'] < current_price]
-        if bullish_fvgs:
-            valid_entry = max(bullish_fvgs, key=lambda x: x['top'])
-            trade_dir = "Long"
-            sl = valid_entry['bottom'] - 1
-    elif bias == 'Bearish':
-        bearish_fvgs = [f for f in unfilled_m5_fvgs if f['type'] == -1 and f['top'] > current_price]
-        if bearish_fvgs:
-            valid_entry = min(bearish_fvgs, key=lambda x: x['bottom'])
-            trade_dir = "Short"
-            sl = valid_entry['top'] + 1
+    import sqlite3
+    try:
+        conn = sqlite3.connect('liquidx.db')
+        df_open = pd.read_sql_query("SELECT id, symbol, direction, entry_price, stop_loss, take_profit, position_size, entry_time FROM trades WHERE status = 'OPEN'", conn)
+        conn.close()
 
-    if valid_entry:
-        entry_p = current_price
-        target = bias_info['dol'][1] if bias_info['dol'] else 0
-        risk_pts = abs(entry_p - sl)
-        pos_size = risk_per_trade / risk_pts if risk_pts > 0 else 0
-
-        st.markdown(f"**Setup Detected:** {trade_dir}")
-        st.markdown(f"**Entry:** {entry_p:.2f}")
-        st.markdown(f"**Stop Loss:** {sl:.2f}")
-        st.markdown(f"**Target:** {target:.2f}")
-        st.markdown(f"**Position Size:** {pos_size:.2f} units")
-
-        if st.button("EXECUTE ICT SETUP"):
-            with st.spinner("Routing order to trade copier..."):
-                connector = QuantXConnector()
-                connector.authenticate()
-                manager = AccountManager(connector)
-                manager.sync_accounts()
-
-                # Assume symbol is 'ES' for the S&P500 terminal
-                action = "Buy" if trade_dir == "Long" else "Sell"
-
-                results = manager.execute_trade(
-                    symbol="ES",
-                    action=action,
-                    risk_per_account=risk_per_trade,
-                    entry_price=entry_p,
-                    stop_loss=sl
-                )
-
-                num_accounts = len(manager.accounts)
-                if results:
-                    st.success(f"Successfully executed trade across {num_accounts} accounts via QuantX!")
-                    st.balloons()
-                else:
-                    st.error("Failed to execute trade. Check logs for details.")
-    else:
-        st.warning("No valid FVG entry setup currently detected.")
-        st.button("EXECUTE ICT SETUP", disabled=True)
-
+        if not df_open.empty:
+            for _, row in df_open.iterrows():
+                with st.container():
+                    st.markdown(f"**{row['direction']} {row['symbol']}**")
+                    st.markdown(f"**Entry:** {row['entry_price']:.2f}")
+                    st.markdown(f"**SL:** {row['stop_loss']:.2f} | **TP:** {row['take_profit']:.2f}")
+                    st.markdown(f"**Size:** {row['position_size']:.2f} units")
+                    st.divider()
+        else:
+            st.info("No active trades.")
+    except Exception as e:
+        st.warning("Database not initialized yet. Run engine.py first.")
 
 # --- TABS ---
 tab_live, tab_backtest = st.tabs(["Live Terminal", "Backtest Results"])
