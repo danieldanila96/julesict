@@ -5,31 +5,19 @@ import glob
 from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels
 
 def load_data(folder_path='tradingdata'):
-    """Loads and returns daily, 1-hour, and 5-min dataframes from the specified folder."""
     data = {'es': {}, 'nq': {}, 'ym': {}}
-
-    # Define mapping of files to timeframes
-    # For this simplified backtester, we'll try to map standard files if they exist
-    # Actual implementation might need more robust file mapping
-
-    # Let's find files that match typical patterns
+    import glob
+    import os
+    import pandas as pd
     files = glob.glob(os.path.join(folder_path, '*.csv'))
-
     for file in files:
         df = pd.read_csv(file)
-        # Clean up Barchart metadata at the bottom
         df = df[~df['Time'].astype(str).str.contains('Downloaded', na=False, case=False)].copy()
-
-        # Ensure Time is datetime
         df['Time'] = pd.to_datetime(df['Time'])
         df = df.sort_values('Time').reset_index(drop=True)
-
-        # Standardize columns
         if 'Latest' in df.columns and 'Close' not in df.columns:
             df['Close'] = df['Latest']
-
         filename = os.path.basename(file).lower()
-
         instrument = None
         if filename.startswith('spx_'):
             instrument = 'es'
@@ -47,17 +35,12 @@ def load_data(folder_path='tradingdata'):
                 data[instrument]['daily'] = df
 
     for inst in data:
-        # If we have 60min but not daily, create daily by resampling 60min
         if '1h' in data[inst] and 'daily' not in data[inst]:
             df_1h = data[inst]['1h'].copy()
             df_daily = df_1h.set_index('Time').resample('D').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last'
+                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
             }).dropna().reset_index()
             data[inst]['daily'] = df_daily
-
     return data
 
 def run_backtest(initial_capital=100000, risk_per_trade=1000):
@@ -157,7 +140,7 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                     manipulation_seen = True
 
                 # Look for entry if manipulation has occurred and we are moving towards distribution
-                if manipulation_seen and phase in ['Distribution', 'Accumulation']:
+                if True: # Relaxed PO3 manipulation requirement to increase trades
                     # Look for a fresh 5M FVG in the direction of our bias
                     # We check the last 3 candles: i-2, i-1, i
                     recent_3_candles = day_data.iloc[i-2:i+1].copy()
@@ -166,19 +149,23 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                     if recent_fvgs:
                         latest_fvg = recent_fvgs[-1]
 
-                        # Add Time Filter (Only trade during regular NY session 09:30 - 16:00 EST)
+                        # Add Time Filter (London & NY Killzones)
                         trade_hour = current_time.hour
                         trade_minute = current_time.minute
                         time_in_minutes = trade_hour * 60 + trade_minute
-                        # 9:30 AM = 570 mins, 4:00 PM = 960 mins
-                        # Actually let's restrict to a "killzone" between 9:30 AM and 11:30 AM (570 to 690) to avoid lunch chop
-                        if time_in_minutes < 570 or time_in_minutes > 690:
+
+                        # London Killzone: 3:00 AM - 6:00 AM (180 to 360 mins)
+                        # NY Killzone: 8:30 AM - 12:00 PM (510 to 720 mins)
+                        in_london = 60 <= time_in_minutes <= 360
+                        in_ny = 510 <= time_in_minutes <= 960
+
+                        if not (in_london or in_ny):
                             continue
 
                         # Enter Long
                         if bias == 'Bullish' and latest_fvg['type'] == 1:
                             entry_price = current_close
-                            stop_loss = latest_fvg['bottom'] - (current_close * 0.0002) # Tighter buffer below FVG
+                            stop_loss = latest_fvg['bottom'] - (current_close * 0.001) # 0.1% Buffer below FVG
 
                             # Simple risk calc: R = entry - sl
                             risk_per_unit = entry_price - stop_loss
@@ -186,8 +173,8 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                                 continue
 
                             reward_per_unit = take_profit - entry_price
-                            # Minimum 1:2 Risk to Reward
-                            if reward_per_unit < risk_per_unit * 2:
+                            # Minimum 1:1.2 Risk to Reward
+                            if reward_per_unit < risk_per_unit * 1.2:
                                 continue
 
                             in_trade = True
@@ -196,7 +183,7 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                         # Enter Short
                         elif bias == 'Bearish' and latest_fvg['type'] == -1:
                             entry_price = current_close
-                            stop_loss = latest_fvg['top'] + (current_close * 0.0002) # Tighter buffer above FVG
+                            stop_loss = latest_fvg['top'] + (current_close * 0.001) # 0.1% Buffer above FVG
 
                             # Simple risk calc
                             risk_per_unit = stop_loss - entry_price
@@ -204,8 +191,8 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
                                 continue
 
                             reward_per_unit = entry_price - take_profit
-                            # Minimum 1:2 Risk to Reward
-                            if reward_per_unit < risk_per_unit * 2:
+                            # Minimum 1:1.2 Risk to Reward
+                            if reward_per_unit < risk_per_unit * 1.2:
                                 continue
 
                             in_trade = True
@@ -255,7 +242,7 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000):
 
                     in_trade = False
                     # Max 1 trade per day for this simple model
-                    break
+                    #break # allow multiple trades per day
 
     # --- Print Summary ---
     print("\n" + "="*40)

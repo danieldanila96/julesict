@@ -6,7 +6,7 @@ LiquidX is a Python-based automated and semi-automated trading terminal designed
 
 - **ICT Engine (`ict_engine.py`)**: The brain of the operation. Detects Fair Value Gaps (FVGs), determines daily bias, calculates Power of 3 (PO3) levels, and evaluates market structure.
 - **SMT Divergence**: Compares relative strength across S&P 500 (ES), Nasdaq (NQ), and Dow Jones (YM) to identify underlying market imbalances.
-- **Backtester (`backtester.py`)**: A robust historical backtesting engine that simulates trading the ICT strategy across multiple timeframes (Daily, 1H, 5M).
+- **Backtester (`backtester.py`)**: A robust historical backtesting engine that simulates trading the ICT strategy across multiple timeframes (Daily, 1H, 5M). It is currently tuned to execute specifically during the **London (1:00 AM - 6:00 AM)** and **New York (8:30 AM - 4:00 PM)** killzones.
 - **Streamlit Terminal UI (`main.py`)**: A modern, dark-themed dashboard built with Streamlit and Plotly for visualizing setups and executing trades.
 - **QuantX Connector (`broker_connector.py`)**: Handles live and simulated trade execution across multiple accounts utilizing the QuantX library for the Topstep API.
 
