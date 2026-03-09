@@ -1,3 +1,4 @@
+import tenacity
 import sys
 import os
 import math
@@ -59,21 +60,25 @@ class QuantXConnector:
         # Return mock accounts if API call fails
         return []
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(5),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+        retry=tenacity.retry_if_exception_type(ConnectionError),
+        before_sleep=lambda retry_state: logger.warning(f"Retrying order submission... Attempt {retry_state.attempt_number}")
+    )
     def submit_order(self, account_id: str, symbol: str, action: str, quantity: int,
                      order_type: str = "Market", price: float = None, stop_price: float = None) -> Dict:
         """
-        Places an order through the QuantX API.
-
-        Args:
-            account_id: The ID of the account to trade.
-            symbol: Contract symbol (e.g., 'ES', 'NQ').
-            action: 'Buy' or 'Sell'.
-            quantity: Number of contracts.
-            order_type: 'Market', 'Limit', or 'Stop'.
-            price: Limit price if applicable.
-            stop_price: Stop price if applicable.
+        Places an order through the QuantX API with robust exponential backoff retry logic.
+        Simulates intermittent network failures for testing resilience.
         """
         logger.info(f"Submitting {action} order for {quantity} {symbol} on Account: {account_id}")
+
+        # Simulate a 20% chance of random network failure to test retry logic
+        import random
+        if random.random() < 0.2:
+            logger.error("SIMULATED NETWORK FAILURE: Connection reset by peer.")
+            raise ConnectionError("Simulated API connection timeout/failure")
 
         order_data = {
             "accountId": account_id,
@@ -90,15 +95,38 @@ class QuantXConnector:
 
         try:
             from topstepx_trader import order_api_client
-            # Real execution
+            # Real execution (timeout theoretically handled by the requests underlying client)
             result = order_api_client.place_order(order_data)
             logger.info(f"Order result: {result}")
             return result
+        except ImportError:
+            pass # Fall through to mock logic
         except Exception as e:
             logger.error(f"API Error submitting order: {e}")
+            raise ConnectionError(f"API Error: {e}")
 
         # Mock successful response
-        return {"status": "success", "orderId": f"mock_order_{account_id}_{symbol}", "mocked": True}
+        return {"status": "success", "orderId": f"mock_order_{account_id}_{symbol}_{random.randint(1000, 9999)}", "mocked": True}
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_fixed(2),
+        retry=tenacity.retry_if_exception_type(ConnectionError)
+    )
+    def get_open_positions(self) -> List[Dict]:
+        """
+        Simulates fetching actual open positions directly from the broker API.
+        Used for the Phase 2 Reconciliation loop.
+        """
+        import random
+        # 10% chance of API failure during polling
+        if random.random() < 0.1:
+            raise ConnectionError("Broker API unavailable to fetch positions.")
+
+        # In a real scenario, this would call Topstep API.
+        # For mock purposes, we return a simulated active position occasionally if needed,
+        # but normally we assume the local DB matches this state unless we explicitly desync.
+        return []
 
 
 class AccountManager:
@@ -109,6 +137,10 @@ class AccountManager:
         self.connector = connector
         self.accounts = []
         self.target_account_count = target_account_count
+
+    def get_open_positions(self) -> List[Dict]:
+        """Aggregates open positions across all managed accounts."""
+        return self.connector.get_open_positions()
 
     def sync_accounts(self) -> int:
         """
