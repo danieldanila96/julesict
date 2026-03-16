@@ -4,6 +4,9 @@ import os
 import math
 import logging
 from typing import List, Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv("QuantX/backend/.env")
 
 # Add QuantX backend to path so we can import its modules
 quantx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'QuantX', 'backend')
@@ -150,21 +153,38 @@ class AccountManager:
         logger.info("Syncing accounts from broker...")
         real_accounts = self.connector.get_accounts()
 
-        self.accounts = real_accounts.copy()
+        target_account_id = os.getenv("ACCOUNT_ID")
 
-        # Simulate trade copier by generating mock accounts up to the target count
-        accounts_needed = self.target_account_count - len(self.accounts)
+        if target_account_id:
+            logger.info(f"Target account ID specified in env: {target_account_id}. Filtering accounts...")
+            filtered_accounts = [acc for acc in real_accounts if acc.get("id") == target_account_id]
 
-        if accounts_needed > 0:
-            logger.info(f"Simulating {accounts_needed} additional accounts for Trade Copier...")
-            base_idx = len(self.accounts) + 1
-            for i in range(accounts_needed):
-                self.accounts.append({
-                    "id": f"MOCK_ACC_{base_idx + i}",
-                    "name": f"Copier Account {base_idx + i}",
+            if filtered_accounts:
+                self.accounts = filtered_accounts
+            else:
+                logger.warning(f"Target account {target_account_id} not found in live API accounts. Creating mock for it.")
+                self.accounts = [{
+                    "id": target_account_id,
+                    "name": "Practice Account",
                     "balance": 150000.00,
                     "is_mock": True
-                })
+                }]
+            self.target_account_count = 1
+        else:
+            self.accounts = real_accounts.copy()
+            # Simulate trade copier by generating mock accounts up to the target count
+            accounts_needed = self.target_account_count - len(self.accounts)
+
+            if accounts_needed > 0:
+                logger.info(f"Simulating {accounts_needed} additional accounts for Trade Copier...")
+                base_idx = len(self.accounts) + 1
+                for i in range(accounts_needed):
+                    self.accounts.append({
+                        "id": f"MOCK_ACC_{base_idx + i}",
+                        "name": f"Copier Account {base_idx + i}",
+                        "balance": 150000.00,
+                        "is_mock": True
+                    })
 
         logger.info(f"Total synchronized accounts: {len(self.accounts)}")
         return len(self.accounts)
