@@ -34,9 +34,9 @@ LiquidX is a Python-based automated and semi-automated trading terminal designed
 
 3. **Install dependencies:**
    ```bash
-   pip install pandas numpy plotly python-dotenv streamlit
+   pip install -r requirements.txt
    ```
-   *(Note: The QuantX backend may have additional requirements depending on your specific setup.)*
+   *(Note: The QuantX backend requires a local Redis server to run for caching session credentials. Ensure `redis-server` is installed and running on your machine.)*
 
 4. **Configure your environment:**
    LiquidX requires a Topstep API key. Ensure your `.env` file in the `QuantX/backend/` directory is correctly configured with your `TOPSTEP_API_KEY` and other necessary credentials.

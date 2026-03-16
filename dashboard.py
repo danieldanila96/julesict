@@ -165,11 +165,15 @@ elif page == "Broker / Account":
         from broker_connector import QuantXConnector
         connector = QuantXConnector()
         auth_success = connector.authenticate()
-    except:
+        auth_error = None
+    except Exception as e:
         connector = None
         auth_success = False
+        auth_error = str(e)
 
     st.subheader("Topstep Instruments")
+    if auth_error:
+        st.error(f"Error loading broker integration modules: {auth_error}")
     if auth_success and connector:
         symbol_query = st.text_input("Query Symbol Contracts (e.g. NQ, ES)", value=get_config('Market', 'symbol', 'ES').upper())
         if symbol_query:

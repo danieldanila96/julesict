@@ -104,17 +104,41 @@ class QuantXConnector:
             logger.error("SIMULATED NETWORK FAILURE: Connection reset by peer.")
             raise ConnectionError("Simulated API connection timeout/failure")
 
+        order_type_map = {"Market": 2, "Limit": 1, "Stop": 3}
+        mapped_type = order_type_map.get(order_type.title(), 2)
+
+        # If the account ID string has letters (like PRAC-V2-...), Topstep might just accept the string,
+        # but the previous payload error indicated "$.accountId" needs to be System.Int32.
+        # Topstep accounts often have an underlying internal integer ID mapped to their string name.
+        # For practice testing when we don't know the exact integer ID from the alias string "PRAC-...",
+        # we will extract the digits if possible or send the string if it's the required alias.
+
+        # Let's extract the internal ID specifically from the previously synced accounts map
+        # to ensure we always send the integer Topstep expects, even if the user provides the name.
+        # Topstep API expects the numeric integer ID for accounts, not the string alias (e.g. "PRAC-V2-...")
+        # We dynamically fetch the active accounts list and map the string name to its true integer ID.
+        internal_acc_id = account_id
+
+        if isinstance(account_id, str) and not account_id.isdigit():
+            # If it's a string like "PRAC-V2-...", we need to query the API to find its real ID
+            live_accounts = self.get_accounts()
+            for acc in live_accounts:
+                if acc.get("name") == account_id:
+                    internal_acc_id = acc.get("id")
+                    logger.info(f"Mapped account alias '{account_id}' to internal ID: {internal_acc_id}")
+                    break
+
         order_data = {
-            "accountId": int(account_id) if isinstance(account_id, str) and account_id.isdigit() else account_id,
-            "side": "Buy" if action.lower() == "buy" else "Sell",
+            "accountId": int(internal_acc_id) if isinstance(internal_acc_id, str) and internal_acc_id.isdigit() else internal_acc_id,
+            "side": 1 if action.lower() == "buy" else 0,
             "contractId": int(symbol) if isinstance(symbol, str) and symbol.isdigit() else symbol,
             "size": quantity,
-            "type": order_type.title()  # e.g., 'Market', 'Limit'
+            "type": mapped_type
         }
 
-        if order_type == "Limit" and price is not None:
-            order_data["price"] = price
-        if order_type == "Stop" and stop_price is not None:
+        if mapped_type == 1 and price is not None:
+            order_data["limitPrice"] = price
+        if mapped_type == 3 and stop_price is not None:
             order_data["stopPrice"] = stop_price
 
         try:
