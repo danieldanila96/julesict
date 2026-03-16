@@ -1,6 +1,7 @@
 {
     "General": {
-        "mode": "Backtest"
+        "mode": "Paper",
+        "bot_status": "Running"
     },
     "Market": {
         "symbol": "es",

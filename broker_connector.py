@@ -105,11 +105,11 @@ class QuantXConnector:
             raise ConnectionError("Simulated API connection timeout/failure")
 
         order_data = {
-            "accountId": account_id,
-            "action": action,
-            "symbol": symbol,
-            "orderQty": quantity,
-            "orderType": order_type
+            "accountId": int(account_id) if isinstance(account_id, str) and account_id.isdigit() else account_id,
+            "side": "Buy" if action.lower() == "buy" else "Sell",
+            "contractId": int(symbol) if isinstance(symbol, str) and symbol.isdigit() else symbol,
+            "size": quantity,
+            "type": order_type.title()  # e.g., 'Market', 'Limit'
         }
 
         if order_type == "Limit" and price is not None:
