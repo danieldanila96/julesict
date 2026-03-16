@@ -4,7 +4,7 @@
         "bot_status": "Running"
     },
     "Market": {
-        "symbol": "es",
+        "symbol": "ym",
         "timeframe": "5m",
         "htf": "1h",
         "london_start": 60,

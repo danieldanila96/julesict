@@ -55,12 +55,20 @@ def run_backtest(profile_name=None):
     commission = config.get("Backtest", {}).get("commission", 2.0)
     point_value = config.get("Risk", {}).get("point_value", 50.0)
 
+    target_symbol = config.get("Market", {}).get("symbol", "es")
+
+    # Automatically map common standard futures tick values if not explicitly set
+    # to avoid ES point value bleeding into NQ or YM tests if the user forgets to switch it.
+    if target_symbol.lower() == "nq" and point_value == 50.0:
+        point_value = 20.0
+    elif target_symbol.lower() == "ym" and point_value == 50.0:
+        point_value = 5.0
+
     # Strategy controls
     min_rr = config.get("Strategy", {}).get("min_rr", 1.2)
     fvg_buffer = config.get("Strategy", {}).get("fvg_buffer_pct", 0.001)
 
     # Market controls
-    target_symbol = config.get("Market", {}).get("symbol", "es")
     ltf = config.get("Market", {}).get("timeframe", "5m")
     htf = config.get("Market", {}).get("htf", "1h")
 
