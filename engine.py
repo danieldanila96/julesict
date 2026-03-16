@@ -6,10 +6,8 @@ from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels
 from database import init_db, log_trade, close_trade, get_open_trades
 from notifier import logger, alert_trade_entry, alert_trade_exit, alert_error
 from broker_connector import QuantXConnector, AccountManager
+from config_manager import load_profile
 
-# Configuration
-SYMBOL = "ES"
-RISK_PER_TRADE = 1000
 POLLING_INTERVAL_SECONDS = 60 # Check for setups every minute
 
 def execute_live_loop():
@@ -30,16 +28,34 @@ def execute_live_loop():
 
     while True:
         try:
-            # 1. Fetch Latest Data (In production, this would be a live tick/candle stream. We use the local CSV loader for now as requested by the architecture)
-            data = load_data('tradingdata')
-            if not data or 'es' not in data or '5m' not in data['es']:
-                alert_error("Engine: Missing required ES 5m data.")
+            # Dynamically reload configuration each loop to catch UI changes
+            config = load_profile()
+            SYMBOL = config.get("Market", {}).get("symbol", "es").upper()
+            RISK_PER_TRADE = config.get("Risk", {}).get("risk_per_trade_usd", 1000)
+            LTF = config.get("Market", {}).get("timeframe", "5m")
+            HTF = config.get("Market", {}).get("htf", "1h")
+            FVG_BUFFER = config.get("Strategy", {}).get("fvg_buffer_pct", 0.001)
+            MIN_RR = config.get("Strategy", {}).get("min_rr", 1.2)
+            MODE = config.get("General", {}).get("mode", "Backtest")
+            BOT_STATUS = config.get("General", {}).get("bot_status", "Stopped")
+
+            # In Backtest mode or if Stopped, the daemon shouldn't execute anything
+            if MODE == "Backtest" or BOT_STATUS == "Stopped":
+                logger.info(f"Daemon sleeping... Mode: {MODE}, Status: {BOT_STATUS}")
                 time.sleep(POLLING_INTERVAL_SECONDS)
                 continue
 
-            df_daily = data['es']['daily']
-            df_1h = data['es']['1h']
-            df_5m = data['es']['5m']
+            # 1. Fetch Latest Data
+            data = load_data('tradingdata')
+            sym_key = SYMBOL.lower()
+            if not data or sym_key not in data or LTF not in data[sym_key]:
+                alert_error(f"Engine: Missing required {SYMBOL} {LTF} data.")
+                time.sleep(POLLING_INTERVAL_SECONDS)
+                continue
+
+            df_daily = data[sym_key]['daily']
+            df_1h = data[sym_key][HTF]
+            df_5m = data[sym_key][LTF]
 
             current_close = df_5m['Close'].iloc[-1]
             current_time = df_5m['Time'].iloc[-1]
@@ -102,13 +118,19 @@ def execute_live_loop():
                             logger.info(f"Routing {reason} exit to broker for Trade {trade_id}")
 
             # 3. If no open trades, look for new setups
-            if not open_trades:
+            if not open_trades and BOT_STATUS == "Running": # Pause prevents new trades
                 # Time filter
                 trade_hour = current_time.hour
                 trade_minute = current_time.minute
                 time_in_minutes = trade_hour * 60 + trade_minute
-                in_london = 60 <= time_in_minutes <= 360
-                in_ny = 510 <= time_in_minutes <= 960
+
+                london_start = config.get("Market", {}).get("london_start", 60)
+                london_end = config.get("Market", {}).get("london_end", 360)
+                ny_start = config.get("Market", {}).get("ny_start", 510)
+                ny_end = config.get("Market", {}).get("ny_end", 960)
+
+                in_london = london_start <= time_in_minutes <= london_end
+                in_ny = ny_start <= time_in_minutes <= ny_end
 
                 if in_london or in_ny:
                     h1_fvgs = detect_fvg(df_1h)
@@ -128,15 +150,15 @@ def execute_live_loop():
                             sl = 0
 
                             if bias == 'Bullish' and latest_fvg['type'] == 1:
-                                sl = latest_fvg['bottom'] - (current_close * 0.00005)
+                                sl = latest_fvg['bottom'] - (current_close * FVG_BUFFER)
                                 risk_per_unit = entry_p - sl
-                                if risk_per_unit > 0 and (target_price - entry_p) >= risk_per_unit * 1.0:
+                                if risk_per_unit > 0 and (target_price - entry_p) >= risk_per_unit * MIN_RR:
                                     trade_dir = "Long"
 
                             elif bias == 'Bearish' and latest_fvg['type'] == -1:
-                                sl = latest_fvg['top'] + (current_close * 0.00005)
+                                sl = latest_fvg['top'] + (current_close * FVG_BUFFER)
                                 risk_per_unit = sl - entry_p
-                                if risk_per_unit > 0 and (entry_p - target_price) >= risk_per_unit * 1.0:
+                                if risk_per_unit > 0 and (entry_p - target_price) >= risk_per_unit * MIN_RR:
                                     trade_dir = "Short"
 
                             if trade_dir:

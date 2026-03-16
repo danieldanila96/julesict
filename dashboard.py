@@ -1,39 +1,22 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 import os
 import glob
-import plotly.graph_objects as go
-from datetime import datetime
-import numpy as np
-from backtester import load_data
+import sqlite3
+import datetime
+from dotenv import set_key, load_dotenv
+
+from backtester import load_data, run_backtest
 from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels, detect_smt_divergence
-from broker_connector import QuantXConnector, AccountManager
+import config_manager as cm
 
-# Configure Streamlit page
-st.set_page_config(
-    page_title="LiquidX Terminal",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Force dark theme via page config and CSS
+st.set_page_config(page_title="LiquidX Terminal", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS for dark theme adjustments (Streamlit's default dark mode handles most of this, but we can tweak)
 st.markdown("""
     <style>
-    .stButton>button {
-        width: 100%;
-        height: 60px;
-        font-size: 20px;
-        font-weight: bold;
-        background-color: #ff4b4b;
-        color: white;
-        border-radius: 5px;
-        border: none;
-    }
-    .stButton>button:hover {
-        background-color: #ff3333;
-        color: white;
-    }
+    /* Add any custom CSS styling here if needed */
     .metric-card {
         background-color: #1e1e1e;
         padding: 15px;
@@ -44,256 +27,360 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Application Title
-st.title("LiquidX Trading Terminal")
-st.markdown("Automated ICT Setup Execution - S&P500")
+st.sidebar.title("LiquidX Terminal")
 
-# --- DATA LOADING & PROCESSING ---
-@st.cache_data(ttl=300) # Cache for 5 minutes
-def fetch_and_process_data():
-    data = load_data('tradingdata')
-    if not data or 'es' not in data or '5m' not in data['es'] or '1h' not in data['es'] or 'daily' not in data['es']:
-        return None, "Error: Missing required timeframes in tradingdata folder."
+# --- PROFILE SELECTION ---
+active_profile = cm.get_active_profile_name()
+all_profiles = cm.list_profiles()
 
-    df_daily = data['es']['daily']
-    df_1h = data['es']['1h']
-    df_5m = data['es']['5m']
+st.sidebar.subheader("Configuration Profile")
+selected_profile = st.sidebar.selectbox("Active Profile", all_profiles, index=all_profiles.index(active_profile))
 
-    # Get the latest state
-    # 1. 1H FVGs for higher timeframe targets
-    h1_fvgs = detect_fvg(df_1h)
+if selected_profile != active_profile:
+    cm.set_active_profile(selected_profile)
+    st.rerun()
 
-    # 2. Daily Bias
-    # Pass the daily df minus the current unclosed day to get previous day high/low correctly
-    daily_history = df_daily.iloc[:-1].copy() if len(df_daily) > 1 else df_daily.copy()
-    current_price = df_5m['Close'].iloc[-1]
-    bias_info = get_daily_bias(daily_history, h1_fvgs, current_price)
+config = cm.load_profile(selected_profile)
 
-    # 3. PO3 Levels based on current day 5m data
-    current_date = df_5m['Time'].dt.date.iloc[-1]
-    day_5m = df_5m[df_5m['Time'].dt.date == current_date].copy()
-    po3_info = calculate_po3_levels(day_5m, bias=bias_info['bias'])
+# --- NAVIGATION ---
+page = st.sidebar.radio("Navigation", [
+    "Overview",
+    "Strategy Settings",
+    "Risk Settings",
+    "Broker / Account",
+    "Backtest Runner",
+    "Live / Paper Control",
+    "Trade History",
+    "Logs / Debug",
+    "Data Management"
+])
 
-    # 4. 5M FVGs for visual chart
-    m5_fvgs = detect_fvg(df_5m.tail(100)) # Only need recent ones for chart
+# --- HELPER FUNCS ---
+def update_config(section, key, val):
+    if section not in config:
+        config[section] = {}
+    config[section][key] = val
+    cm.save_profile(selected_profile, config)
 
-    # 5. SMT Divergence
-    # Use real NQ and YM 5m data loaded from the tradingdata folder
-    df_nq = data.get('nq', {}).get('5m')
-    df_ym = data.get('ym', {}).get('5m')
+def get_config(section, key, default):
+    return config.get(section, {}).get(key, default)
 
-    if df_nq is None or df_ym is None:
-        return None, "Error: Missing NQ or YM 5m data for SMT Divergence."
+# --- PAGES ---
 
-    smt_info = detect_smt_divergence(df_5m, df_nq, df_ym, lookback=20)
+if page == "Overview":
+    st.title("LiquidX - Overview")
+    st.markdown(f"**Current Profile:** `{selected_profile}` | **Mode:** `{get_config('General', 'mode', 'Backtest')}`")
 
-    return {
-        'df_5m': df_5m,
-        'bias_info': bias_info,
-        'po3_info': po3_info,
-        'm5_fvgs': m5_fvgs,
-        'current_price': current_price,
-        'smt_info': smt_info
-    }, None
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Symbol", get_config('Market', 'symbol', 'ES').upper())
+    col2.metric("Timeframe", get_config('Market', 'timeframe', '5m').upper())
+    col3.metric("Risk Per Trade", f"${get_config('Risk', 'risk_per_trade_usd', 1000.0):.2f}")
 
-# Load data
-with st.spinner("Loading market data and calculating technicals..."):
-    app_state, error = fetch_and_process_data()
+    st.divider()
+    st.subheader("Profile Management")
+    new_profile_name = st.text_input("New Profile Name")
+    if st.button("Save As New Profile"):
+        if new_profile_name:
+            cm.save_profile(new_profile_name, config)
+            cm.set_active_profile(new_profile_name)
+            st.success(f"Created and activated profile: {new_profile_name}")
+            st.rerun()
 
-if error:
-    st.error(error)
-    st.stop()
+    if st.button("Reset to Defaults"):
+        if selected_profile == cm.DEFAULT_PROFILE:
+            st.warning("Cannot delete default profile, but it has been reset.")
+            cm.save_profile(cm.DEFAULT_PROFILE, cm.DEFAULT_CONFIG)
+        else:
+            cm.delete_profile(selected_profile)
+            st.success("Deleted profile.")
+        st.rerun()
 
-df_5m = app_state['df_5m']
-bias_info = app_state['bias_info']
-po3_info = app_state['po3_info']
-m5_fvgs = app_state['m5_fvgs']
-current_price = app_state['current_price']
+elif page == "Strategy Settings":
+    st.title("Strategy Settings")
+    st.markdown("Configure the Inner Circle Trader (ICT) logic engines.")
 
-# --- SIDEBAR: THE DAILY CHECKLIST ---
-with st.sidebar:
-    st.header("The Daily Checklist")
+    with st.form("strategy_form"):
+        col1, col2 = st.columns(2)
 
-    # Check 1: Daily Bias Set
-    bias = bias_info['bias']
-    bias_color = "green" if bias == "Bullish" else "red" if bias == "Bearish" else "gray"
-    bias_checked = bias != "Neutral"
-    st.checkbox("Daily Bias Set", value=bias_checked, disabled=True)
-    if bias_checked:
-        st.markdown(f"**Bias:** <span style='color:{bias_color}'>{bias}</span>", unsafe_allow_html=True)
-        if bias_info['dol']:
-            st.markdown(f"**DOL:** {bias_info['dol'][0]} @ {bias_info['dol'][1]:.2f}")
+        with col1:
+            st.subheader("Core Toggles")
+            enable_fvg = st.checkbox("Enable FVG Logic", value=get_config('Strategy', 'enable_fvg', True))
+            enable_dol = st.checkbox("Enable DOL (Draw on Liquidity)", value=get_config('Strategy', 'enable_dol', True))
+            enable_smt = st.checkbox("Enable SMT Divergence", value=get_config('Strategy', 'enable_smt', True))
+            enable_po3 = st.checkbox("Enable PO3 (Midnight Open Manipulation)", value=get_config('Strategy', 'enable_po3', True))
 
-    # Check 2: High Impact News
-    st.checkbox("High Impact News Cleared", value=True) # Mocked to True for now
+            st.subheader("Market & Timeframes")
+            symbol = st.text_input("Symbol", value=get_config('Market', 'symbol', 'es'))
+            ltf = st.text_input("Execution Timeframe", value=get_config('Market', 'timeframe', '5m'))
+            htf = st.text_input("Higher Timeframe (Bias)", value=get_config('Market', 'htf', '1h'))
 
-    # Check 3: Midnight Open Manipulation
-    po3_phase = po3_info.get('po3_phase', 'Unknown')
-    manip_checked = "Manipulation" in po3_phase or "Distribution" in po3_phase
-    st.checkbox("Midnight Open Manipulation Detected", value=manip_checked, disabled=True)
-    if manip_checked:
-        st.markdown(f"**Current Phase:** {po3_phase}")
-        st.markdown(f"**Midnight Open:** {po3_info.get('midnight_open', 0):.2f}")
+        with col2:
+            st.subheader("Thresholds")
+            fvg_buffer = st.number_input("FVG Stop Loss Buffer (%)", value=get_config('Strategy', 'fvg_buffer_pct', 0.001), format="%.5f")
+            min_rr = st.number_input("Minimum Risk/Reward (RR)", value=get_config('Strategy', 'min_rr', 1.2), step=0.1)
 
-    # Check 4: SMT Divergence
-    smt_info = app_state['smt_info']
-    smt_status = smt_info['status']
-    smt_checked = smt_status != "None"
-    st.checkbox("SMT Divergence Detected", value=smt_checked, disabled=True)
-    if smt_checked:
-        smt_color = "green" if "Bullish" in smt_status else "red" if "Bearish" in smt_status else "orange"
-        st.markdown(f"**Status:** <span style='color:{smt_color}'>{smt_status}</span>", unsafe_allow_html=True)
-        st.markdown(f"*{smt_info['message']}*")
+            st.subheader("Session Killzones (Minutes from 00:00)")
+            lon_start = st.number_input("London Start", value=get_config('Market', 'london_start', 60))
+            lon_end = st.number_input("London End", value=get_config('Market', 'london_end', 360))
+            ny_start = st.number_input("NY Start", value=get_config('Market', 'ny_start', 510))
+            ny_end = st.number_input("NY End", value=get_config('Market', 'ny_end', 960))
+
+        submit = st.form_submit_button("Save Strategy Settings")
+        if submit:
+            update_config('Strategy', 'enable_fvg', enable_fvg)
+            update_config('Strategy', 'enable_dol', enable_dol)
+            update_config('Strategy', 'enable_smt', enable_smt)
+            update_config('Strategy', 'enable_po3', enable_po3)
+            update_config('Strategy', 'fvg_buffer_pct', fvg_buffer)
+            update_config('Strategy', 'min_rr', min_rr)
+
+            update_config('Market', 'symbol', symbol.lower())
+            update_config('Market', 'timeframe', ltf.lower())
+            update_config('Market', 'htf', htf.lower())
+            update_config('Market', 'london_start', int(lon_start))
+            update_config('Market', 'london_end', int(lon_end))
+            update_config('Market', 'ny_start', int(ny_start))
+            update_config('Market', 'ny_end', int(ny_end))
+
+            st.success("Strategy config saved!")
+
+elif page == "Risk Settings":
+    st.title("Risk Management")
+    with st.form("risk_form"):
+        risk_usd = st.number_input("Risk Per Trade (USD)", value=get_config('Risk', 'risk_per_trade_usd', 1000.0), step=100.0)
+        pt_val = st.number_input("Point Value (Multiplier)", value=get_config('Risk', 'point_value', 50.0), step=1.0)
+
+        submit = st.form_submit_button("Save Risk Settings")
+        if submit:
+            update_config('Risk', 'risk_per_trade_usd', risk_usd)
+            update_config('Risk', 'point_value', pt_val)
+            st.success("Risk config saved!")
+
+elif page == "Broker / Account":
+    st.title("Broker Integration")
+    st.markdown("Configure Topstep API settings.")
+
+    # Load env for display/editing
+    load_dotenv("QuantX/backend/.env")
+
+    with st.form("broker_form"):
+        acc_id = st.text_input("Account ID", value=os.getenv("ACCOUNT_ID", ""))
+        api_key = st.text_input("API Key", value=os.getenv("API_KEY", ""), type="password")
+        session_token = st.text_input("Session Token", value=os.getenv("SESSION_TOKEN", ""), type="password")
+        username = st.text_input("Username (Email)", value=os.getenv("USERNAME", ""))
+
+        mode = st.selectbox("Bot Operation Mode", ["Backtest", "Paper", "Live"], index=["Backtest", "Paper", "Live"].index(get_config("General", "mode", "Backtest")))
+
+        submit = st.form_submit_button("Save Broker Config")
+        if submit:
+            # We save the mode to config
+            update_config("General", "mode", mode)
+
+            # We save the credentials to .env for safety
+            env_path = "QuantX/backend/.env"
+            set_key(env_path, "ACCOUNT_ID", acc_id)
+            set_key(env_path, "API_KEY", api_key)
+            set_key(env_path, "TOPSTEP_API_KEY", api_key)
+            set_key(env_path, "SESSION_TOKEN", session_token)
+            set_key(env_path, "USERNAME", username)
+
+            st.success("Broker settings and mode saved!")
+
+    if st.button("Test Connection"):
+        with st.spinner("Connecting to QuantX..."):
+            try:
+                from broker_connector import QuantXConnector
+                connector = QuantXConnector()
+                if connector.authenticate():
+                    st.success("Successfully authenticated with API.")
+                else:
+                    st.error("Failed to authenticate.")
+            except Exception as e:
+                st.error(f"Error connecting: {e}")
+
+elif page == "Backtest Runner":
+    st.title("Backtest Runner")
+    st.markdown(f"Running strategy against historical data using active profile: `{selected_profile}`")
+
+    with st.form("backtest_form"):
+        st.subheader("Backtest Parameters")
+        col1, col2, col3 = st.columns(3)
+
+        # Pull parameters so users can override standard strategy settings for this run
+        sym = col1.text_input("Symbol", value=get_config("Market", "symbol", "es"))
+        ltf = col2.text_input("Execution Timeframe", value=get_config("Market", "timeframe", "5m"))
+        htf = col3.text_input("Higher Timeframe", value=get_config("Market", "htf", "1h"))
+
+        start_d = col1.date_input("Start Date", value=datetime.date(2025, 1, 1))
+        end_d = col2.date_input("End Date", value=datetime.date.today())
+
+        init_cap = col1.number_input("Initial Capital", value=get_config("Backtest", "initial_capital", 100000.0), step=1000.0)
+        comm = col2.number_input("Commission (Per Side)", value=get_config("Backtest", "commission", 2.0), step=0.1)
+        slip = col3.number_input("Slippage (Points)", value=get_config("Backtest", "slippage", 0.25), step=0.25)
+
+        submit = st.form_submit_button("Run Backtest")
+
+        if submit:
+            update_config("Market", "symbol", sym.lower())
+            update_config("Market", "timeframe", ltf.lower())
+            update_config("Market", "htf", htf.lower())
+            update_config("Backtest", "start_date", start_d.strftime("%Y-%m-%d"))
+            update_config("Backtest", "end_date", end_d.strftime("%Y-%m-%d"))
+            update_config("Backtest", "initial_capital", init_cap)
+            update_config("Backtest", "commission", comm)
+            update_config("Backtest", "slippage", slip)
+
+            with st.spinner("Simulating historical execution..."):
+                results = run_backtest(selected_profile)
+
+                if "error" in results:
+                    st.error(results["error"])
+                else:
+                    st.session_state['bt_results'] = results
+                    st.success("Backtest complete!")
+
+    if 'bt_results' in st.session_state:
+        res = st.session_state['bt_results']
+        stats = res['stats']
+        df_trades = res['trades']
+
+        st.subheader("Performance Analytics")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Final Capital", f"${stats['final_capital']:,.2f}", f"{stats['return_pct']:.2f}%")
+        col2.metric("Total PnL", f"${stats['total_pnl']:,.2f}")
+        col3.metric("Win Rate", f"{stats['win_rate']:.2f}%", f"{stats['winning_trades']}W / {stats['losing_trades']}L")
+        col4.metric("Profit Factor", f"{stats['profit_factor']:.2f}")
+
+        st.subheader("Equity Curve")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_trades['Date'], y=df_trades['Cumulative Equity'], mode='lines', name='Equity', line=dict(color='#00ff00')))
+        fig.update_layout(template='plotly_dark', xaxis_title="Date", yaxis_title="Capital ($)")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Trade Log")
+        st.dataframe(df_trades, use_container_width=True)
+
+elif page == "Live / Paper Control":
+    st.title("Execution Dashboard")
+    mode = get_config("General", "mode", "Backtest")
+    bot_status = get_config("General", "bot_status", "Stopped")
+
+    st.markdown(f"**Current Mode:** `{mode}` | **Bot Status:** `{bot_status}`")
+
+    if mode == "Backtest":
+        st.warning("Bot is currently in Backtest mode. Go to Broker / Account settings to switch to Paper or Live.")
+
+    st.subheader("Daemon Controls")
+    st.info("Start the execution loop externally via `python engine.py` or a process manager. Use the controls below to dictate the daemon's runtime state.")
+
+    col1, col2, col3 = st.columns(3)
+    if col1.button("▶️ Start Bot", disabled=(bot_status == "Running")):
+        update_config("General", "bot_status", "Running")
+        st.success("Bot signal sent: RUNNING")
+        st.rerun()
+    if col2.button("⏸️ Pause Entries", disabled=(bot_status == "Paused")):
+        update_config("General", "bot_status", "Paused")
+        st.warning("Bot signal sent: PAUSED (Will manage existing trades, but take no new ones)")
+        st.rerun()
+    if col3.button("⏹️ Stop Bot", disabled=(bot_status == "Stopped")):
+        update_config("General", "bot_status", "Stopped")
+        st.error("Bot signal sent: STOPPED")
+        st.rerun()
 
     st.divider()
 
-    st.header("Risk Settings")
-    risk_per_trade = st.number_input("Risk per Trade ($)", min_value=100, max_value=5000, value=1000, step=100)
+    st.subheader("Live Market Context")
+    try:
+        data = load_data('tradingdata')
+        sym = get_config("Market", "symbol", "es").lower()
+        ltf = get_config("Market", "timeframe", "5m")
+        if sym in data and ltf in data[sym]:
+            df = data[sym][ltf]
+            last_price = df['Close'].iloc[-1]
+            last_time = df['Time'].iloc[-1]
+            st.metric(f"{sym.upper()} Current Price", f"{last_price:.2f}", f"As of {last_time}")
+        else:
+            st.warning("Market data unavailable.")
+    except Exception as e:
+        st.error("Error loading market context.")
 
-    st.divider()
-
-    # --- OPEN POSITIONS MONITOR ---
-    st.header("Open Positions")
-    st.write("Read-only view from execution engine database.")
-
-    import sqlite3
+    st.subheader("Open Positions (Local State)")
     try:
         conn = sqlite3.connect('liquidx.db')
-        df_open = pd.read_sql_query("SELECT id, symbol, direction, entry_price, stop_loss, take_profit, position_size, entry_time FROM trades WHERE status = 'OPEN'", conn)
+        df_open = pd.read_sql_query("SELECT * FROM trades WHERE status = 'OPEN'", conn)
         conn.close()
 
         if not df_open.empty:
-            for _, row in df_open.iterrows():
-                with st.container():
-                    st.markdown(f"**{row['direction']} {row['symbol']}**")
-                    st.markdown(f"**Entry:** {row['entry_price']:.2f}")
-                    st.markdown(f"**SL:** {row['stop_loss']:.2f} | **TP:** {row['take_profit']:.2f}")
-                    st.markdown(f"**Size:** {row['position_size']:.2f} units")
-                    st.divider()
+            st.dataframe(df_open, use_container_width=True)
         else:
             st.info("No active trades.")
     except Exception as e:
-        st.warning("Database not initialized yet. Run engine.py first.")
+        st.warning("Database not initialized or empty.")
 
-# --- TABS ---
-tab_live, tab_backtest = st.tabs(["Live Terminal", "Backtest Results"])
+elif page == "Trade History":
+    st.title("Historical Live Trades")
+    try:
+        conn = sqlite3.connect('liquidx.db')
+        df_all = pd.read_sql_query("SELECT * FROM trades ORDER BY id DESC", conn)
+        conn.close()
 
-with tab_live:
-
-
-    # Create Plotly Chart
-    # Only show the last N candles for clarity
-    plot_df = df_5m.tail(150).copy()
-
-    fig = go.Figure(data=[go.Candlestick(x=plot_df['Time'],
-                    open=plot_df['Open'],
-                    high=plot_df['High'],
-                    low=plot_df['Low'],
-                    close=plot_df['Close'],
-                    name="S&P 500")])
-
-    # Draw Midnight Open Line
-    if 'midnight_open' in po3_info:
-        m_open = po3_info['midnight_open']
-        fig.add_hline(y=m_open, line_dash="dash", line_color="orange",
-                      annotation_text="Midnight Open", annotation_position="top right")
-
-    # Draw DOL Targets
-    if bias_info['dol']:
-        dol_price = bias_info['dol'][1]
-        dol_name = bias_info['dol'][0]
-        fig.add_hline(y=dol_price, line_width=2, line_color="purple",
-                      annotation_text=f"DOL: {dol_name}", annotation_position="bottom right")
-
-    # Highlight FVGs
-    # Filter to only show FVGs that overlap with our plot window
-    start_time = plot_df['Time'].iloc[0]
-    for fvg in m5_fvgs:
-        fvg_time = fvg['time'] if fvg['time'] is not None else start_time
-        if pd.to_datetime(fvg_time) >= start_time:
-            color = "rgba(0, 255, 0, 0.2)" if fvg['type'] == 1 else "rgba(255, 0, 0, 0.2)"
-
-            # Add shape for FVG
-            fig.add_shape(type="rect",
-                x0=fvg_time, y0=fvg['bottom'],
-                x1=plot_df['Time'].iloc[-1], y1=fvg['top'],
-                fillcolor=color,
-                line=dict(color="rgba(255, 255, 255, 0)"),
-                layer="below"
-            )
-
-    # Format Chart
-    fig.update_layout(
-        title='LiquidX 5-Minute Execution Chart',
-        yaxis_title='Price',
-        xaxis_title='Time',
-        xaxis_rangeslider_visible=False,
-        template='plotly_dark',
-        height=700,
-        margin=dict(l=0, r=0, t=40, b=0)
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Footer info
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current Price", f"{current_price:.2f}")
-    with col2:
-        st.metric("PO3 Phase", po3_info.get('po3_phase', 'Unknown'))
-    with col3:
-        st.metric("Latest Update", plot_df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S'))
-
-
-with tab_backtest:
-    st.header("Backtest Reports")
-
-    if not os.path.exists('reports'):
-        st.info("No reports folder found. Run the backtester to generate reports.")
-    else:
-        report_files = sorted(glob.glob('reports/*.csv'), reverse=True)
-        if not report_files:
-            st.info("No backtest CSV reports found.")
+        if df_all.empty:
+            st.info("No trades executed yet.")
         else:
-            selected_report = st.selectbox("Select a Backtest Report", report_files)
+            col1, col2, col3 = st.columns(3)
+            sym_filter = col1.selectbox("Filter Symbol", ["All"] + list(df_all['symbol'].unique()))
+            dir_filter = col2.selectbox("Filter Direction", ["All", "Long", "Short"])
+            status_filter = col3.selectbox("Filter Status", ["All", "OPEN", "CLOSED"])
 
-            if selected_report:
-                df_report = pd.read_csv(selected_report)
+            if sym_filter != "All":
+                df_all = df_all[df_all['symbol'] == sym_filter]
+            if dir_filter != "All":
+                df_all = df_all[df_all['direction'] == dir_filter]
+            if status_filter != "All":
+                df_all = df_all[df_all['status'] == status_filter]
 
-                # Derive summary stats assuming starting cap $100k, risk $1k
-                st.markdown("### Summary Statistics")
-                col1, col2, col3, col4 = st.columns(4)
+            st.dataframe(df_all, use_container_width=True)
+    except Exception as e:
+        st.warning("Database not found.")
 
-                # We know from requirements: Starting cap is $100k, risk is $1k
-                start_cap = 100000
-                risk_pt = 1000
+elif page == "Logs / Debug":
+    st.title("System Logs")
+    if os.path.exists('logs/liquidx.log'):
+        with open('logs/liquidx.log', 'r') as f:
+            logs = f.readlines()
 
-                with col1:
-                    st.metric("Starting Capital", f"${start_cap:,.2f}")
-                with col2:
-                    st.metric("Risk per Trade", f"${risk_pt:,.2f}")
-                with col3:
-                    total_trades = len(df_report)
-                    st.metric("Total Trades", total_trades)
-                with col4:
-                    if total_trades > 0:
-                        final_cap = df_report['Cumulative Equity'].iloc[-1]
-                        st.metric("Final Equity", f"${final_cap:,.2f}", f"{(final_cap - start_cap)/start_cap * 100:.2f}%")
+        st.code("".join(logs[-100:]), language="text") # Show last 100 lines
+    else:
+        st.info("No log file found at logs/liquidx.log")
 
-                st.markdown("---")
-                st.markdown("### Equity Curve")
+elif page == "Data Management":
+    st.title("Data Management")
+    st.markdown("Current market data loaded in `/tradingdata`")
 
-                fig_eq = go.Figure()
-                fig_eq.add_trace(go.Scatter(x=df_report['Date'], y=df_report['Cumulative Equity'], mode='lines', name='Equity', line=dict(color='#00ff00', width=2)))
-                fig_eq.update_layout(
-                    template='plotly_dark',
-                    xaxis_title='Date',
-                    yaxis_title='Account Equity ($)',
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    height=400
-                )
-                st.plotly_chart(fig_eq, use_container_width=True)
+    col1, col2 = st.columns([2, 1])
 
-                st.markdown("### Trade Log")
-                st.dataframe(df_report, use_container_width=True)
+    with col1:
+        st.subheader("Available Datasets")
+        files = glob.glob("tradingdata/*.csv")
+        if files:
+            for f in files:
+                size = os.path.getsize(f) / 1024 # KB
+                st.text(f"📄 {os.path.basename(f)} ({size:.1f} KB)")
+        else:
+            st.info("No data files found.")
+
+    with col2:
+        st.subheader("Upload New Data")
+        uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+        if uploaded_file is not None:
+            if not os.path.exists('tradingdata'):
+                os.makedirs('tradingdata')
+            with open(os.path.join('tradingdata', uploaded_file.name), 'wb') as f:
+                f.write(uploaded_file.getbuffer())
+            st.success(f"Saved {uploaded_file.name} to tradingdata!")
+            st.rerun()
+
+        if st.button("Reload Data Cache"):
+            # Streamlit clears cache decorators with clear()
+            st.cache_data.clear()
+            st.success("Cache cleared. Data will be reloaded on next query.")

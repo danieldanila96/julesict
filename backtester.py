@@ -3,6 +3,7 @@ import numpy as np
 import os
 import glob
 from ict_engine import detect_fvg, get_daily_bias, calculate_po3_levels
+from config_manager import load_profile
 
 def load_data(folder_path='tradingdata'):
     data = {'es': {}, 'nq': {}, 'ym': {}}
@@ -43,30 +44,54 @@ def load_data(folder_path='tradingdata'):
             data[inst]['daily'] = df_daily
     return data
 
-def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, commission=2.00):
+def run_backtest(profile_name=None):
     """
-    Runs a simplified historical backtest of the ICT strategy.
-
-    Strategy Rules:
-    1. Daily Bias (from daily data & 1H FVGs): Determine Draw on Liquidity (DOL).
-    2. Midnight Open (PO3): Wait for manipulation (Judas Swing) in the opposite direction of bias.
-    3. Entry: Enter when price forms an FVG on the 5-min timeframe in the direction of the bias,
-       after manipulation has occurred.
-    4. Exit: Target is the DOL. Stop loss is below the 5-min FVG or recent swing low/high.
+    Runs a historical backtest of the ICT strategy using parameters loaded from config.
     """
+    config = load_profile(profile_name)
+    initial_capital = config.get("Backtest", {}).get("initial_capital", 100000)
+    risk_per_trade = config.get("Risk", {}).get("risk_per_trade_usd", 1000)
+    slippage = config.get("Backtest", {}).get("slippage", 0.25)
+    commission = config.get("Backtest", {}).get("commission", 2.0)
+    point_value = config.get("Risk", {}).get("point_value", 50.0)
 
-    print("Loading data for backtest...")
+    # Strategy controls
+    min_rr = config.get("Strategy", {}).get("min_rr", 1.2)
+    fvg_buffer = config.get("Strategy", {}).get("fvg_buffer_pct", 0.001)
+
+    # Market controls
+    target_symbol = config.get("Market", {}).get("symbol", "es")
+    ltf = config.get("Market", {}).get("timeframe", "5m")
+    htf = config.get("Market", {}).get("htf", "1h")
+
+    # Time filters
+    london_start = config.get("Market", {}).get("london_start", 60)
+    london_end = config.get("Market", {}).get("london_end", 360)
+    ny_start = config.get("Market", {}).get("ny_start", 510)
+    ny_end = config.get("Market", {}).get("ny_end", 960)
+
+    print(f"Loading data for backtest using profile '{profile_name}'...")
     data = load_data()
 
-    if 'es' not in data or '5m' not in data['es'] or '1h' not in data['es'] or 'daily' not in data['es']:
-        print("Error: Missing required timeframes (Daily, 1H, 5M) for ES in tradingdata folder.")
-        return
+    if target_symbol not in data or ltf not in data[target_symbol] or htf not in data[target_symbol] or 'daily' not in data[target_symbol]:
+        err_msg = f"Error: Missing required timeframes (Daily, {htf.upper()}, {ltf.upper()}) for {target_symbol.upper()} in tradingdata folder."
+        print(err_msg)
+        return {"error": err_msg}
 
-    df_daily = data['es']['daily']
-    df_1h = data['es']['1h']
-    df_5m = data['es']['5m']
+    df_daily = data[target_symbol]['daily']
+    df_1h = data[target_symbol][htf]
+    df_5m = data[target_symbol][ltf]
 
-    print(f"Loaded: {len(df_daily)} daily candles, {len(df_1h)} 1H candles, {len(df_5m)} 5M candles.")
+    # Filter data based on Start / End Dates if set in config
+    start_str = config.get("Backtest", {}).get("start_date")
+    end_str = config.get("Backtest", {}).get("end_date")
+
+    if start_str and end_str:
+        start_date = pd.to_datetime(start_str).date()
+        end_date = pd.to_datetime(end_str).date()
+        df_5m = df_5m[(df_5m['Time'].dt.date >= start_date) & (df_5m['Time'].dt.date <= end_date)]
+
+    print(f"Loaded: {len(df_daily)} daily candles, {len(df_1h)} {htf.upper()} candles, {len(df_5m)} {ltf.upper()} candles.")
 
     capital = initial_capital
     trades = []
@@ -154,10 +179,8 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
                         trade_minute = current_time.minute
                         time_in_minutes = trade_hour * 60 + trade_minute
 
-                        # London Killzone: 3:00 AM - 6:00 AM (180 to 360 mins)
-                        # NY Killzone: 8:30 AM - 12:00 PM (510 to 720 mins)
-                        in_london = 60 <= time_in_minutes <= 360
-                        in_ny = 510 <= time_in_minutes <= 960
+                        in_london = london_start <= time_in_minutes <= london_end
+                        in_ny = ny_start <= time_in_minutes <= ny_end
 
                         if not (in_london or in_ny):
                             continue
@@ -165,16 +188,14 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
                         # Enter Long
                         if bias == 'Bullish' and latest_fvg['type'] == 1:
                             entry_price = current_close + slippage
-                            stop_loss = latest_fvg['bottom'] - (current_close * 0.001) # 0.1% Buffer below FVG
+                            stop_loss = latest_fvg['bottom'] - (current_close * fvg_buffer)
 
-                            # Simple risk calc: R = entry - sl
                             risk_per_unit = entry_price - stop_loss
                             if risk_per_unit <= 0:
                                 continue
 
                             reward_per_unit = take_profit - entry_price
-                            # Minimum 1:1.2 Risk to Reward
-                            if reward_per_unit < risk_per_unit * 1.2:
+                            if reward_per_unit < risk_per_unit * min_rr:
                                 continue
 
                             in_trade = True
@@ -183,16 +204,14 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
                         # Enter Short
                         elif bias == 'Bearish' and latest_fvg['type'] == -1:
                             entry_price = current_close - slippage
-                            stop_loss = latest_fvg['top'] + (current_close * 0.001) # 0.1% Buffer above FVG
+                            stop_loss = latest_fvg['top'] + (current_close * fvg_buffer)
 
-                            # Simple risk calc
                             risk_per_unit = stop_loss - entry_price
                             if risk_per_unit <= 0:
                                 continue
 
                             reward_per_unit = entry_price - take_profit
-                            # Minimum 1:1.2 Risk to Reward
-                            if reward_per_unit < risk_per_unit * 1.2:
+                            if reward_per_unit < risk_per_unit * min_rr:
                                 continue
 
                             in_trade = True
@@ -232,9 +251,9 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
                     pnl = (exit_price - entry_price) * position_size * trade_dir
 
                     # Deduct commissions
-                    # position_size here represents dollar-equivalent points.
-                    # For ES, 1 contract = $50 per point.
-                    contracts = position_size / 50.0
+                    # position_size represents total point distance risk.
+                    # Converting to standard contracts:
+                    contracts = position_size / point_value
                     total_commission = contracts * commission * 2 # round trip
                     pnl -= total_commission
 
@@ -258,15 +277,12 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
                     #break # allow multiple trades per day
 
     # --- Print Summary ---
-    print("\n" + "="*40)
-    print("BACKTEST SUMMARY")
-    print("="*40)
-
+    # Calculate statistics to return to UI
     if not trades:
-        print("No trades taken during the period.")
-        return
+        return {"error": "No trades executed during the backtest."}
 
     df_trades = pd.DataFrame(trades)
+    df_trades['Cumulative Equity'] = df_trades['Capital']
 
     total_trades = len(df_trades)
     winning_trades = len(df_trades[df_trades['PnL'] > 0])
@@ -281,97 +297,28 @@ def run_backtest(initial_capital=100000, risk_per_trade=1000, slippage=0.25, com
     final_capital = initial_capital + total_pnl
     return_pct = (total_pnl / initial_capital) * 100
 
-    print(f"Total Trades:   {total_trades}")
-    print(f"Win Rate:       {win_rate:.2f}% ({winning_trades} W / {losing_trades} L)")
-    print(f"Profit Factor:  {profit_factor:.2f}")
-    print(f"Starting Cap:   ${initial_capital:,.2f}")
-    print(f"Final Cap:      ${final_capital:,.2f}")
-    print(f"Total Net PnL:  ${total_pnl:,.2f} ({return_pct:.2f}%)")
-    print("="*40)
-
-    print("\nLast 5 Trades:")
-    print(df_trades[['Date', 'Type', 'Entry Price', 'Exit Price', 'PnL', 'Reason']].tail())
-
-    # Generate Reports
+    # Save a copy as CSV
     import datetime
-    import plotly.graph_objects as go
-
     os.makedirs('reports', exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_base = f"reports/backtest_{timestamp}"
+    report_base = f"reports/backtest_{timestamp}.csv"
+    df_trades.to_csv(report_base, index=False)
 
-    # Save raw trades for Streamlit to ingest easily
-    df_trades['Cumulative Equity'] = df_trades['Capital']
-    df_trades.to_csv(f"{report_base}.csv", index=False)
-
-    # Save a standalone HTML report
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_trades['Date'], y=df_trades['Cumulative Equity'], mode='lines', name='Equity Curve'))
-
-    fig.update_layout(
-        title=f"LiquidX Backtest Report - {timestamp}",
-        xaxis_title="Date",
-        yaxis_title="Account Equity ($)",
-        template='plotly_dark'
-    )
-
-    # Convert dataframe to HTML table
-    table_html = df_trades[['Date', 'Type', 'Entry Price', 'Exit Price', 'PnL', 'Cumulative Equity', 'Reason']].to_html(classes='table table-striped', index=False)
-
-    html_content = f"""
-    <html>
-    <head>
-        <title>LiquidX Backtest - {timestamp}</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #121212; color: #ffffff; }}
-            .summary {{ padding: 20px; background-color: #1e1e1e; border-radius: 8px; margin-bottom: 20px; }}
-            .table-container {{ overflow-x: auto; margin-top: 30px; }}
-            table {{ width: 100%; border-collapse: collapse; text-align: left; }}
-            th, td {{ padding: 12px; border-bottom: 1px solid #333; }}
-            th {{ background-color: #2c2c2c; }}
-        </style>
-        <!-- DataTables CSS/JS for sortable HTML tables -->
-        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-        <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-        <script>
-            $(document).ready( function () {{
-                $('.table').DataTable({{
-                    "pageLength": 50,
-                    "order": [[ 0, "desc" ]] // sort by date descending
-                }});
-            }} );
-        </script>
-    </head>
-    <body>
-        <h1>LiquidX Backtest Report</h1>
-        <div class="summary">
-            <h2>Summary Statistics</h2>
-            <p><strong>Starting Capital:</strong> ${initial_capital:,.2f}</p>
-            <p><strong>Risk Per Trade:</strong> ${risk_per_trade:,.2f}</p>
-            <p><strong>Total Trades:</strong> {total_trades}</p>
-            <p><strong>Win Rate:</strong> {win_rate:.2f}% ({winning_trades}W / {losing_trades}L)</p>
-            <p><strong>Profit Factor:</strong> {profit_factor:.2f}</p>
-            <p><strong>Final Capital:</strong> ${final_capital:,.2f}</p>
-            <p><strong>Total Net PnL:</strong> ${total_pnl:,.2f} ({return_pct:.2f}%)</p>
-        </div>
-
-        <div style="height: 500px; width: 100%;">
-            {fig.to_html(full_html=False, include_plotlyjs='cdn')}
-        </div>
-
-        <div class="table-container">
-            <h2>Trade Log</h2>
-            {table_html}
-        </div>
-    </body>
-    </html>
-    """
-
-    with open(f"{report_base}.html", "w") as f:
-        f.write(html_content)
-
-    print(f"\nReport generated: {report_base}.html and {report_base}.csv")
+    return {
+        "trades": df_trades,
+        "stats": {
+            "initial_capital": initial_capital,
+            "final_capital": final_capital,
+            "total_pnl": total_pnl,
+            "return_pct": return_pct,
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "profit_factor": profit_factor,
+            "risk_per_trade": risk_per_trade
+        }
+    }
 
 
 if __name__ == '__main__':
