@@ -160,6 +160,39 @@ elif page == "Broker / Account":
     st.title("Broker Integration")
     st.markdown("Configure Topstep API settings.")
 
+    # Initialize the QuantX Connector to fetch actual contracts if authenticated
+    try:
+        from broker_connector import QuantXConnector
+        connector = QuantXConnector()
+        auth_success = connector.authenticate()
+    except:
+        connector = None
+        auth_success = False
+
+    st.subheader("Topstep Instruments")
+    if auth_success and connector:
+        symbol_query = st.text_input("Query Symbol Contracts (e.g. NQ, ES)", value=get_config('Market', 'symbol', 'ES').upper())
+        if symbol_query:
+            contracts = connector.search_contracts(symbol_query)
+            if contracts and len(contracts) > 0 and contracts[0].get('id') != 'MOCK.CON':
+                # Map contracts into a selectbox
+                contract_options = {f"{c['name']} ({c['description']})": c['id'] for c in contracts}
+                selected_contract_name = st.selectbox("Select Active Contract for Trading", list(contract_options.keys()))
+
+                if st.button("Set as Primary Instrument"):
+                    update_config('Market', 'symbol', symbol_query.lower())
+
+                    env_path = "QuantX/backend/.env"
+                    set_key(env_path, "CONTRACT_ID", contract_options[selected_contract_name])
+
+                    st.success(f"Instrument locked to: {contract_options[selected_contract_name]}")
+            else:
+                st.warning(f"No contracts found for {symbol_query}")
+    else:
+        st.warning("Not authenticated with Topstep API. Please configure credentials below to pull live instruments.")
+
+    st.divider()
+
     # Load env for display/editing
     load_dotenv("QuantX/backend/.env")
 

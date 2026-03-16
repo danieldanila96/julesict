@@ -26,6 +26,8 @@
     "Backtest": {
         "initial_capital": 100000.0,
         "commission": 2.0,
-        "slippage": 0.25
+        "slippage": 0.25,
+        "start_date": "2025-01-01",
+        "end_date": "2026-03-16"
     }
 }
