@@ -48,8 +48,8 @@ def execute_live_loop():
             # 1. Fetch Latest Data
             data = load_data('tradingdata')
             sym_key = SYMBOL.lower()
-            if not data or sym_key not in data or LTF not in data[sym_key]:
-                alert_error(f"Engine: Missing required {SYMBOL} {LTF} data.")
+            if not data or sym_key not in data or LTF not in data[sym_key] or HTF not in data[sym_key] or 'daily' not in data[sym_key]:
+                alert_error(f"Engine: Missing required {SYMBOL} timeframes (Daily, {HTF}, {LTF}).")
                 time.sleep(POLLING_INTERVAL_SECONDS)
                 continue
 

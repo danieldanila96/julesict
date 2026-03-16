@@ -59,10 +59,17 @@ def run_backtest(profile_name=None):
 
     # Automatically map common standard futures tick values if not explicitly set
     # to avoid ES point value bleeding into NQ or YM tests if the user forgets to switch it.
-    if target_symbol.lower() == "nq" and point_value == 50.0:
-        point_value = 20.0
-    elif target_symbol.lower() == "ym" and point_value == 50.0:
-        point_value = 5.0
+    # Also adjusts realistic default slippage values based on typical index volatility
+    if target_symbol.lower() == "nq":
+        if point_value == 50.0:
+            point_value = 20.0
+        if slippage == 0.25:
+            slippage = 0.75
+    elif target_symbol.lower() == "ym":
+        if point_value == 50.0:
+            point_value = 5.0
+        if slippage == 0.25:
+            slippage = 1.0
 
     # Strategy controls
     min_rr = config.get("Strategy", {}).get("min_rr", 1.2)
@@ -149,13 +156,19 @@ def run_backtest(profile_name=None):
         position_size = 0
         trade_dir = 1 if bias == 'Bullish' else -1
         manipulation_seen = False
+        last_trade_bar = -1 # Prevent multiple executions on the same exact signal bar
 
         # Iterate through the day's 5M candles
-        for i in range(2, len(day_data)):
+        # Iterate through the day's 5M candles (leave room for i+1 entry execution)
+        for i in range(2, len(day_data) - 1):
             current_time = day_data['Time'].iloc[i]
             current_close = day_data['Close'].iloc[i]
             current_high = day_data['High'].iloc[i]
             current_low = day_data['Low'].iloc[i]
+
+            # The actual execution price is determined by the open of the NEXT candle
+            # to simulate realistic signal-processing latency
+            next_open = day_data['Open'].iloc[i+1]
 
             # Update PO3 phase
             # For backtesting mid-day, we pass data up to the current candle
@@ -195,8 +208,8 @@ def run_backtest(profile_name=None):
 
                         # Enter Long
                         if bias == 'Bullish' and latest_fvg['type'] == 1:
-                            entry_price = current_close + slippage
-                            stop_loss = latest_fvg['bottom'] - (current_close * fvg_buffer)
+                            entry_price = next_open + slippage
+                            stop_loss = latest_fvg['bottom'] - (next_open * fvg_buffer)
 
                             risk_per_unit = entry_price - stop_loss
                             if risk_per_unit <= 0:
@@ -208,11 +221,12 @@ def run_backtest(profile_name=None):
 
                             in_trade = True
                             position_size = risk_per_trade / risk_per_unit
+                            last_trade_bar = i
 
                         # Enter Short
                         elif bias == 'Bearish' and latest_fvg['type'] == -1:
-                            entry_price = current_close - slippage
-                            stop_loss = latest_fvg['top'] + (current_close * fvg_buffer)
+                            entry_price = next_open - slippage
+                            stop_loss = latest_fvg['top'] + (next_open * fvg_buffer)
 
                             risk_per_unit = stop_loss - entry_price
                             if risk_per_unit <= 0:
@@ -224,8 +238,9 @@ def run_backtest(profile_name=None):
 
                             in_trade = True
                             position_size = risk_per_trade / risk_per_unit
+                            last_trade_bar = i
 
-            else:
+            if in_trade and last_trade_bar != i:
                 # We are in a trade, check for exit (Stop Loss or Take Profit)
                 exit_price = 0
                 exit_reason = ""
@@ -245,8 +260,8 @@ def run_backtest(profile_name=None):
                         exit_price = take_profit + slippage
                         exit_reason = "Take Profit"
 
-                # End of day exit
-                if i == len(day_data) - 1 and not exit_reason:
+                # End of day exit (i loops up to len(day_data) - 2)
+                if i == len(day_data) - 2 and not exit_reason:
                     if trade_dir == 1:
                         exit_price = current_close - slippage
                     else:

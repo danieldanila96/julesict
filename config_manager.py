@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
         "london_start": 60,   # 1:00 AM (in minutes from midnight)
         "london_end": 360,    # 6:00 AM
         "ny_start": 510,      # 8:30 AM
-        "ny_end": 960         # 4:00 PM
+        "ny_end": 660         # 11:00 AM (Refined for strictly ICT NY Killzone action)
     },
     "Strategy": {
         "enable_fvg": True,
