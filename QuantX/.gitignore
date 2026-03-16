@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+.vscode/
+*.log
+.DS_Store
+.env
+os
+logs/*.json
+dist-electron/
+logs/

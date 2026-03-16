@@ -1,0 +1,10 @@
+__pycache__
+streamlit.log
+*.db
+*.log
+logs/
+reports/
+__pycache__/
+QuantX/frontend/
+QuantX/node_modules/
+QuantX/package-lock.json
